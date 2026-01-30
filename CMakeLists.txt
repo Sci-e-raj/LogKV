@@ -7,4 +7,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(kv_store
     src/main.cpp
     src/kv_store.cpp
+    src/wal.cpp
 )

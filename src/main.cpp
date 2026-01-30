@@ -3,9 +3,13 @@
 #include <string>
 
 #include "kv_store.h"
+#include "wal.h"
 
 int main() {
     KVStore store;
+    WriteAheadLog wal("store.wal");
+
+    wal.replay(store);
 
     std::string line;
     while (std::getline(std::cin, line)) {
@@ -24,17 +28,14 @@ int main() {
                 continue;
             }
 
+            wal.append("PUT " + key + " " + value);
             store.put(key, value);
+
             std::cout << "OK\n";
         }
         else if (command == "GET") {
             std::string key;
             iss >> key;
-
-            if (key.empty()) {
-                std::cout << "ERROR\n";
-                continue;
-            }
 
             auto result = store.get(key);
             if (result.has_value()) {
