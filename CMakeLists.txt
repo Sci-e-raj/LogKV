@@ -8,4 +8,5 @@ add_executable(logkv
     src/server.cpp
     src/wal.cpp
     src/store.cpp
+    src/replication.cpp
 )

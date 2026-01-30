@@ -5,9 +5,19 @@
 #include <thread>
 #include <iostream>
 
-Server::Server(int port)
-    : port_(port), wal_("wal.log") {
+Server::Server(int port, Role role)
+    : port_(port), role_(role), wal_("wal.log") {
+
     wal_.replay(store_);
+
+    if (role_ == Role::LEADER) {
+        replicator_ = std::make_unique<Replicator>(
+            std::vector<std::string>{
+                "127.0.0.1:8081",
+                "127.0.0.1:8082"
+            }
+        );
+    }
 }
 
 void Server::start() {
@@ -32,27 +42,70 @@ void Server::start() {
 void Server::handleClient(int client_fd) {
     char buffer[1024];
     int n = read(client_fd, buffer, sizeof(buffer));
-    if (n <= 0) return;
+    if (n <= 0) {
+        close(client_fd);
+        return;
+    }
 
     std::string req(buffer, n);
     std::istringstream iss(req);
 
-    std::string cmd, key, value;
-    iss >> cmd >> key;
+    std::string cmd;
+    iss >> cmd;
 
-    if (cmd == "PUT") {
-        iss >> value;
+    // ---------- REPLICATION MESSAGE ----------
+    if (cmd == "REPL_PUT") {
+        std::string key, value;
+        iss >> key >> value;
+
         wal_.appendPut(key, value);
         store_.put(key, value);
+
+        write(client_fd, "ACK\n", 4);
+        close(client_fd);
+        return;
+    }
+
+    // ---------- CLIENT PUT ----------
+    if (cmd == "PUT") {
+        std::string key, value;
+        iss >> key >> value;
+
+        if (role_ == Role::FOLLOWER) {
+            write(client_fd, "NOT_LEADER\n", 11);
+            close(client_fd);
+            return;
+        }
+
+        wal_.appendPut(key, value);
+        store_.put(key, value);
+
+        if (replicator_) {
+            replicator_->replicatePut(key, value);
+        }
+
         write(client_fd, "OK\n", 3);
-    } else if (cmd == "GET") {
+        close(client_fd);
+        return;
+    }
+
+    // ---------- CLIENT GET ----------
+    if (cmd == "GET") {
+        std::string key, value;
+        iss >> key;
+
         if (store_.get(key, value)) {
             write(client_fd, value.c_str(), value.size());
             write(client_fd, "\n", 1);
         } else {
             write(client_fd, "NOT_FOUND\n", 10);
         }
+
+        close(client_fd);
+        return;
     }
 
+    // ---------- UNKNOWN ----------
+    write(client_fd, "UNKNOWN_CMD\n", 12);
     close(client_fd);
 }
