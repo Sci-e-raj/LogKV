@@ -1,0 +1,28 @@
+# ===== Build directories =====
+build/
+cmake-build-*/
+
+# ===== CMake generated files =====
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+compile_commands.json
+
+# ===== Executables =====
+kv_store
+
+# ===== Object files =====
+*.o
+*.obj
+
+# ===== Logs / runtime files =====
+*.log
+*.wal
+
+# ===== Editor / OS noise =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
