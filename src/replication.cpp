@@ -29,6 +29,7 @@ void Replicator::sendHeartbeats() {
         }
 
         std::string msg = "HEARTBEAT\n";
+
         write(sock, msg.c_str(), msg.size());
         close(sock);
     }

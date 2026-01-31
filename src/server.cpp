@@ -5,13 +5,26 @@
 #include <thread>
 #include <iostream>
 
+void Server::stepDown(int new_term) {
+    if (new_term > current_term_) {
+        current_term_ = new_term;
+    }
+
+    role_ = Role::FOLLOWER;
+    voted_for_ = -1;
+
+    std::cout << "[INFO] Stepping down to FOLLOWER, term "
+              << current_term_ << std::endl;
+}
+
 void Server::startElection() {
     current_term_++;
     voted_for_ = server_id_;
+    role_ = Role::CANDIDATE;
 
     int votes = 1; // vote for self
 
-    for (const auto& addr : peers_){
+    for (const auto& addr : peers_) {
         std::string ip = addr.substr(0, addr.find(':'));
         int port = std::stoi(addr.substr(addr.find(':') + 1));
 
@@ -31,24 +44,34 @@ void Server::startElection() {
         std::ostringstream oss;
         oss << "REQUEST_VOTE " << current_term_ << " " << server_id_ << "\n";
         std::string msg = oss.str();
-
         write(sock, msg.c_str(), msg.size());
 
         char buffer[128];
         int n = read(sock, buffer, sizeof(buffer));
-        if (n > 0 && std::string(buffer, n).find("VOTE_GRANTED") != std::string::npos) {
-            votes++;
+
+        if (n > 0) {
+            std::string resp(buffer, n);
+            if (resp.find("VOTE_GRANTED") != std::string::npos) {
+                votes++;
+            }
         }
 
         close(sock);
     }
 
-    if (votes > 1) {
+    // Majority = (peers + self) / 2 + 1
+    int majority = (peers_.size() + 1) / 2 + 1;
+
+    if (votes >= majority) {
         role_ = Role::LEADER;
-        std::cout << "[INFO] Became LEADER for term " << current_term_ << "\n";
+        std::cout << "[INFO] Became LEADER for term "
+                  << current_term_ << "\n";
         startHeartbeatSender();
+    } else {
+        role_ = Role::FOLLOWER;
     }
 }
+
 
 void Server::startHeartbeatMonitor() {
     last_heartbeat_ = std::chrono::steady_clock::now();
@@ -60,10 +83,6 @@ void Server::startHeartbeatMonitor() {
                 now - last_heartbeat_
             ).count();
 
-            // if (diff > 3) {
-            //     leader_alive_ = false;
-            //     std::cout << "[WARN] Leader considered dead\n";
-            // }
             if (diff > 3 && role_ == Role::FOLLOWER) {
                 leader_alive_ = false;
                 std::cout << "[WARN] Leader dead. Starting election...\n";
@@ -77,10 +96,27 @@ void Server::startHeartbeatMonitor() {
 
 void Server::startHeartbeatSender() {
     std::thread([this]() {
-        while (true) {
-            if (replicator_) {
-                replicator_->sendHeartbeats();
+        while (role_ == Role::LEADER) {
+            for (const auto& addr : peers_) {
+                int sock = socket(AF_INET, SOCK_STREAM, 0);
+                if (sock < 0) continue;
+
+                sockaddr_in serv{};
+                serv.sin_family = AF_INET;
+                serv.sin_port = htons(std::stoi(addr.substr(addr.find(':') + 1)));
+                inet_pton(AF_INET,
+                          addr.substr(0, addr.find(':')).c_str(),
+                          &serv.sin_addr);
+
+                if (connect(sock, (sockaddr*)&serv, sizeof(serv)) == 0) {
+                    std::ostringstream oss;
+                    oss << "HEARTBEAT " << current_term_ << "\n";
+                    std::string msg = oss.str();
+                    write(sock, msg.c_str(), msg.size());
+                }
+                close(sock);
             }
+
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }).detach();
@@ -147,12 +183,18 @@ void Server::handleClient(int client_fd) {
         int term, candidate_id;
         iss >> term >> candidate_id;
 
+        // If candidate has higher term → step down
         if (term > current_term_) {
-            current_term_ = term;
-            voted_for_ = -1;
+            stepDown(term);
         }
 
-        if (voted_for_ == -1 && term == current_term_) {
+        if (term < current_term_) {
+            write(client_fd, "VOTE_DENIED\n", 12);
+            close(client_fd);
+            return;
+        }
+
+        if (voted_for_ == -1) {
             voted_for_ = candidate_id;
             write(client_fd, "VOTE_GRANTED\n", 13);
         } else {
@@ -164,8 +206,17 @@ void Server::handleClient(int client_fd) {
     }
 
     if (cmd == "HEARTBEAT") {
-        last_heartbeat_ = std::chrono::steady_clock::now();
-        leader_alive_ = true;
+        int term;
+        iss >> term;
+
+        if (term > current_term_) {
+            stepDown(term);
+        }
+
+        if (term == current_term_) {
+            last_heartbeat_ = std::chrono::steady_clock::now();
+            leader_alive_ = true;
+        }
 
         write(client_fd, "OK\n", 3);
         close(client_fd);

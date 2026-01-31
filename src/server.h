@@ -8,7 +8,8 @@
 
 enum class Role {
     LEADER,
-    FOLLOWER
+    FOLLOWER,
+    CANDIDATE
 };
 
 class Server {
@@ -26,6 +27,8 @@ private:
     std::chrono::steady_clock::time_point last_heartbeat_;
     void startHeartbeatSender();
     void startHeartbeatMonitor();
+
+    void stepDown(int new_term);
 
     int current_term_ = 0;
     int voted_for_ = -1;
