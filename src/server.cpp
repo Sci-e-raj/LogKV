@@ -5,6 +5,37 @@
 #include <thread>
 #include <iostream>
 
+void Server::startHeartbeatMonitor() {
+    last_heartbeat_ = std::chrono::steady_clock::now();
+
+    std::thread([this]() {
+        while (true) {
+            auto now = std::chrono::steady_clock::now();
+            auto diff = std::chrono::duration_cast<std::chrono::seconds>(
+                now - last_heartbeat_
+            ).count();
+
+            if (diff > 3) {
+                leader_alive_ = false;
+                std::cout << "[WARN] Leader considered dead\n";
+            }
+
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }).detach();
+}
+
+void Server::startHeartbeatSender() {
+    std::thread([this]() {
+        while (true) {
+            if (replicator_) {
+                replicator_->sendHeartbeats();
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }).detach();
+}
+
 Server::Server(int port, Role role)
     : port_(port), role_(role), wal_("wal.log") {
 
@@ -20,6 +51,7 @@ Server::Server(int port, Role role)
     }
 }
 
+
 void Server::start() {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -32,6 +64,13 @@ void Server::start() {
     listen(server_fd, 10);
 
     std::cout << "LogKV running on port " << port_ << std::endl;
+
+    if (role_ == Role::LEADER) {
+        startHeartbeatSender();
+    }
+    if (role_ == Role::FOLLOWER) {
+        startHeartbeatMonitor();
+    }
 
     while (true) {
         int client = accept(server_fd, nullptr, nullptr);
@@ -52,6 +91,15 @@ void Server::handleClient(int client_fd) {
 
     std::string cmd;
     iss >> cmd;
+
+    if (cmd == "HEARTBEAT") {
+        last_heartbeat_ = std::chrono::steady_clock::now();
+        leader_alive_ = true;
+
+        write(client_fd, "OK\n", 3);
+        close(client_fd);
+        return;
+    }
 
     // ---------- REPLICATION MESSAGE ----------
     if (cmd == "REPL_PUT") {
