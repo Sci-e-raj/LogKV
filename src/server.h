@@ -21,6 +21,8 @@ public:
     std::unique_ptr<Replicator> replicator_;
     void startElection();
     std::vector<std::string> peers_;
+    int last_log_index_ = 0;
+    int commit_index_ = 0;
 
 private:
     std::atomic<bool> leader_alive_{true};

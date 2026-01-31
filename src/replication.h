@@ -5,7 +5,10 @@
 class Replicator {
 public:
     Replicator(const std::vector<std::string>& followers);
-    void replicatePut(const std::string& key, const std::string& value);
+    bool replicatePut(int index,
+                  const std::string& key,
+                  const std::string& value);
+
     void sendHeartbeats();
     const std::vector<std::string>& followers() const;
 

@@ -18,11 +18,11 @@ void Server::stepDown(int new_term) {
 }
 
 void Server::startElection() {
+    role_ = Role::CANDIDATE;
     current_term_++;
     voted_for_ = server_id_;
-    role_ = Role::CANDIDATE;
 
-    int votes = 1; // vote for self
+    int votes = 1;
 
     for (const auto& addr : peers_) {
         std::string ip = addr.substr(0, addr.find(':'));
@@ -46,32 +46,22 @@ void Server::startElection() {
         std::string msg = oss.str();
         write(sock, msg.c_str(), msg.size());
 
-        char buffer[128];
-        int n = read(sock, buffer, sizeof(buffer));
-
-        if (n > 0) {
-            std::string resp(buffer, n);
-            if (resp.find("VOTE_GRANTED") != std::string::npos) {
-                votes++;
-            }
+        char buf[128];
+        int n = read(sock, buf, sizeof(buf));
+        if (n > 0 && std::string(buf, n).find("VOTE_GRANTED") != std::string::npos) {
+            votes++;
         }
 
         close(sock);
     }
 
-    // Majority = (peers + self) / 2 + 1
-    int majority = (peers_.size() + 1) / 2 + 1;
-
-    if (votes >= majority) {
+    if (votes > peers_.size() / 2) {
         role_ = Role::LEADER;
         std::cout << "[INFO] Became LEADER for term "
                   << current_term_ << "\n";
         startHeartbeatSender();
-    } else {
-        role_ = Role::FOLLOWER;
     }
 }
-
 
 void Server::startHeartbeatMonitor() {
     last_heartbeat_ = std::chrono::steady_clock::now();
@@ -183,18 +173,15 @@ void Server::handleClient(int client_fd) {
         int term, candidate_id;
         iss >> term >> candidate_id;
 
-        // If candidate has higher term → step down
         if (term > current_term_) {
-            stepDown(term);
+            current_term_ = term;
+            role_ = Role::FOLLOWER;
+            voted_for_ = -1;
         }
 
-        if (term < current_term_) {
-            write(client_fd, "VOTE_DENIED\n", 12);
-            close(client_fd);
-            return;
-        }
+        if (term == current_term_ &&
+            (voted_for_ == -1 || voted_for_ == candidate_id)) {
 
-        if (voted_for_ == -1) {
             voted_for_ = candidate_id;
             write(client_fd, "VOTE_GRANTED\n", 13);
         } else {
@@ -223,12 +210,12 @@ void Server::handleClient(int client_fd) {
         return;
     }
 
-    // ---------- REPLICATION MESSAGE ----------
     if (cmd == "REPL_PUT") {
+        int index;
         std::string key, value;
-        iss >> key >> value;
+        iss >> index >> key >> value;
 
-        wal_.appendPut(key, value);
+        wal_.appendPut(index, key, value);
         store_.put(key, value);
 
         write(client_fd, "ACK\n", 4);
@@ -236,28 +223,34 @@ void Server::handleClient(int client_fd) {
         return;
     }
 
-    // ---------- CLIENT PUT ----------
     if (cmd == "PUT") {
         std::string key, value;
         iss >> key >> value;
 
-        if (role_ == Role::FOLLOWER) {
+        if (role_ != Role::LEADER) {
             write(client_fd, "NOT_LEADER\n", 11);
             close(client_fd);
             return;
         }
 
-        wal_.appendPut(key, value);
-        store_.put(key, value);
+        int index = ++last_log_index_;
 
-        if (replicator_) {
-            replicator_->replicatePut(key, value);
+        wal_.appendPut(index, key, value);
+
+        bool committed = replicator_->replicatePut(index, key, value);
+
+        if (committed) {
+            store_.put(key, value);
+            commit_index_ = index;
+            write(client_fd, "OK\n", 3);
+        } else {
+            write(client_fd, "FAILED\n", 7);
         }
 
-        write(client_fd, "OK\n", 3);
         close(client_fd);
         return;
     }
+
 
     // ---------- CLIENT GET ----------
     if (cmd == "GET") {
