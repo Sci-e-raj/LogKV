@@ -2,6 +2,7 @@
 #include "store.h"
 #include "wal.h"
 #include "replication.h"
+#include "snapshot.h"
 #include <memory>
 #include <atomic>
 #include <chrono>
@@ -52,6 +53,11 @@ private:
     // Storage
     KVStore store_;
     WriteAheadLog wal_;
+    SnapshotManager snapshot_manager_;
+    
+    // Snapshot configuration
+    int snapshot_threshold_ = 1000;  // Take snapshot every N log entries
+    std::atomic<int> entries_since_snapshot_{0};
     
     // Event-driven architecture
     EventQueue event_queue_;
@@ -93,6 +99,13 @@ private:
     // Log management
     void applyLogEntry(const LogEntry& entry);
     void advanceCommitIndex();
+    
+    // Snapshot management
+    void createSnapshotIfNeeded();
+    void createSnapshot();
+    bool loadSnapshot();
+    void handleInstallSnapshot(int client_fd, const std::string& request);
+    void sendSnapshotToFollower(const std::string& follower_addr);
     
     // Network
     void handleClient(int client_fd);

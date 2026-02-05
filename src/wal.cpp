@@ -182,3 +182,82 @@ void WriteAheadLog::persistCache() {
     
     out.flush();
 }
+
+// ============================================================================
+// SNAPSHOT INTEGRATION IMPLEMENTATIONS
+// ============================================================================
+
+void WriteAheadLog::discardEntriesBefore(int snapshot_index) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    std::cout << "[INFO] Compacting log: discarding entries up to index " 
+              << snapshot_index << std::endl;
+    
+    // Find position of snapshot_index in our cache
+    // Remember: log_cache_ uses 0-based indexing, but log entries use 1-based
+    int cache_position = -1;
+    for (size_t i = 0; i < log_cache_.size(); i++) {
+        if (log_cache_[i].index == snapshot_index) {
+            cache_position = i;
+            break;
+        }
+    }
+    
+    if (cache_position == -1) {
+        std::cout << "[WARN] Snapshot index " << snapshot_index 
+                  << " not found in log cache (might already be compacted)" << std::endl;
+        return;
+    }
+    
+    // Remove all entries up to and including snapshot_index
+    log_cache_.erase(log_cache_.begin(), log_cache_.begin() + cache_position + 1);
+    
+    // Update first_log_index
+    if (!log_cache_.empty()) {
+        first_log_index_ = log_cache_[0].index;
+    } else {
+        first_log_index_ = snapshot_index + 1;
+    }
+    
+    // Persist the compacted log to disk
+    persistCache();
+    
+    std::cout << "[SUCCESS] Log compacted. First index is now " 
+              << first_log_index_ << ", " << log_cache_.size() 
+              << " entries remaining" << std::endl;
+}
+
+int WriteAheadLog::getFirstLogIndex() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (log_cache_.empty()) {
+        return first_log_index_;
+    }
+    
+    return log_cache_[0].index;
+}
+
+void WriteAheadLog::installSnapshot(int last_included_index, int last_included_term) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    std::cout << "[INFO] Installing snapshot: last_included_index=" 
+              << last_included_index << ", last_included_term=" 
+              << last_included_term << std::endl;
+    
+    // Clear all existing log entries
+    log_cache_.clear();
+    
+    // Set first log index to the entry after the snapshot
+    first_log_index_ = last_included_index + 1;
+    
+    // Persist empty log
+    persistCache();
+    
+    // Save metadata with the snapshot's term
+    // This is CRITICAL for log matching when entries are appended
+    saveMetadata(last_included_term, -1);
+    
+    std::cout << "[SUCCESS] Snapshot installed. Next log index will be " 
+              << first_log_index_ << std::endl;
+}
+
